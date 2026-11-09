@@ -65,6 +65,7 @@ export class InboxDispatcherWorker extends MastraWorker {
       } catch (error) {
         this.deps?.logger.error('CareOps inbox worker poll failed', {
           errorName: error instanceof Error ? error.name : 'UnknownError',
+          errorMessage: error instanceof Error ? error.message.slice(0, 300) : 'Unknown error',
         });
       }
 
@@ -81,8 +82,8 @@ export class InboxDispatcherWorker extends MastraWorker {
           WHERE (status = 'queued' AND (lease_until IS NULL OR lease_until < NOW()))
              OR (status = 'dispatching' AND lease_until < NOW())
           ORDER BY created_at
-          FOR UPDATE SKIP LOCKED
           LIMIT 1
+          FOR UPDATE SKIP LOCKED
        )
        UPDATE careops_inbox AS inbox
           SET status = 'dispatching',
@@ -162,6 +163,7 @@ export class InboxDispatcherWorker extends MastraWorker {
     } catch (error) {
       this.deps?.logger.error('CareOps failed to release inbox item', {
         errorName: error instanceof Error ? error.name : 'UnknownError',
+        errorMessage: error instanceof Error ? error.message.slice(0, 300) : 'Unknown error',
       });
     }
   }
