@@ -99,6 +99,15 @@ export const photonWebhookRoute = registerApiRoute('/photon/webhook', {
     if (!senderAllowlist.has(message.sender.id)) return c.body(null, 204);
     if (content.text.length > 8_000) return c.body(null, 204);
 
+    // Photon labels shared-pool iMessage conversations with the literal "shared".
+    // Only map that label in the explicitly enabled, single-tenant demo mode.
+    const sharedLine = space.phone === 'shared';
+    if (sharedLine && process.env.PHOTON_SHARED_LINE_TEST_MODE !== 'true') {
+      return c.body(null, 204);
+    }
+    const routingLine = sharedLine ? process.env.PHOTON_LINE?.trim() : space.phone;
+    if (!routingLine) return c.body(null, 204);
+
     await ensureDatabaseSchema();
     const pool = await requirePostgres();
     const tenantResult = await pool.query<{
@@ -108,8 +117,10 @@ export const photonWebhookRoute = registerApiRoute('/photon/webhook', {
     }>(
       `SELECT tenant_id, photon_line, allowed_senders
          FROM careops_tenants
-        WHERE photon_line = $1 AND enabled = TRUE`,
-      [space.phone],
+        WHERE photon_line = $1
+          AND enabled = TRUE
+          AND ($2::boolean = FALSE OR (SELECT COUNT(*) FROM careops_tenants WHERE enabled = TRUE) = 1)`,
+      [routingLine, sharedLine],
     );
     const tenant = tenantResult.rows[0];
     if (!tenant || !tenant.allowed_senders.includes(message.sender.id)) return c.body(null, 204);
@@ -130,6 +141,13 @@ export const photonWebhookRoute = registerApiRoute('/photon/webhook', {
         content.text,
       ],
     );
+
+    console.info('Photon inbound message queued', {
+      messageId: message.id,
+      webhookId: c.req.header('X-Spectrum-Webhook-Id') ?? null,
+      tenantId: tenant.tenant_id,
+      lineMode: sharedLine ? 'shared-test' : 'dedicated',
+    });
 
     return c.json({ accepted: true }, 202);
   },

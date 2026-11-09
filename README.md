@@ -5,7 +5,7 @@ This repository contains the cloud hosted Mastra Server for the CareOps caregive
 ## Message flow
 
 1. Photon sends a signed `POST /photon/webhook` event over HTTPS.
-2. The route verifies the raw body HMAC and timestamp, checks the configured test sender and line, then writes the inbound event to the Postgres inbox before returning `202`.
+2. The route verifies the raw body HMAC and timestamp, checks the configured test sender and line, then writes the inbound event to the Postgres inbox before returning `202`. Photon shared-pool messages use the line label `shared`; the demo can map that label to its configured line only in explicit single-tenant test mode.
 3. A Mastra worker dispatches the event into a persisted workflow. Mastra's Postgres storage keeps workflow and memory state available across restarts.
 4. The shared agent uses tenant scoped memory and agency specific instructions loaded from the tenant configuration. The demo does not expose record writing tools.
 5. The workflow sends the reply through the Spectrum SDK. A durable outbox record prevents a retry from sending twice if delivery is ambiguous.
@@ -23,7 +23,8 @@ Connect this GitHub repository to the existing Mastra project `starter-agent-6d5
 | `SPECTRUM_SIGNING_SECRET` | The secret returned once when the Photon webhook is created |
 | `CAREGIVER_AGENCY_ID` | `careops-demo` |
 | `CAREGIVER_AGENCY_NAME` | `Caregiver Agency Demo` |
-| `PHOTON_LINE` | The dedicated Photon iMessage line |
+| `PHOTON_LINE` | The configured Photon iMessage line used for tenant routing |
+| `PHOTON_SHARED_LINE_TEST_MODE` | Set to `true` only for this single-tenant demo while the Photon project is on a shared-pool line. Shared-line events are rejected if more than one tenant is enabled. Keep `false` for dedicated-line deployments. |
 | `TEST_SENDERS` | Comma separated E.164 allowlist for the demo testers |
 | `MASTRA_MODEL` | `mastra/anthropic/claude-sonnet-5-5` |
 | `MASTRA_GATEWAY_API_KEY` | Mastra Gateway API key. Required for the `mastra/...` model route; this uses Mastra Gateway credits and does not require an Anthropic API key. |
