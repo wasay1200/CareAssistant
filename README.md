@@ -26,8 +26,11 @@ Connect this GitHub repository to the existing Mastra project `starter-agent-6d5
 | `PHOTON_LINE` | The dedicated Photon iMessage line |
 | `TEST_SENDERS` | Comma separated E.164 allowlist for the demo testers |
 | `MASTRA_MODEL` | `mastra/anthropic/claude-sonnet-5-5` |
+| `MASTRA_GATEWAY_API_KEY` | Mastra Gateway API key. Required for the `mastra/...` model route; this uses Mastra Gateway credits and does not require an Anthropic API key. |
 
-Mastra supplies `DATABASE_URL` to the runtime when its managed PostgreSQL database is attached. Keep credentials in the Mastra environment variable manager; never put them in GitHub, logs, or a local `.env` committed to the repository.
+Mastra supplies `DATABASE_URL` to the runtime when its managed PostgreSQL database is attached. Store `MASTRA_GATEWAY_API_KEY` with the other secrets in Mastra Production. Keep credentials in the Mastra environment variable manager; never put them in GitHub, logs, or a local `.env` committed to the repository.
+
+Connect `wasay1200/CareAssistant` to the Mastra project with both the Server and Studio branches set to `main`. Mastra then builds and deploys commits pushed to `main`. The repository root is the application directory.
 
 After the first successful deployment, copy the public server URL from the Mastra project and register this Photon webhook URL:
 
