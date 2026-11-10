@@ -6,6 +6,7 @@ import { requirePostgres } from './storage.js';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_TIMESTAMP_AGE_SECONDS = 5 * 60;
+const INBOUND_MESSAGE_EVENTS = new Set(['messages', 'message.received']);
 
 const textMessageEvent = z.object({
   event: z.string(),
@@ -24,18 +25,64 @@ const textMessageEvent = z.object({
   }).passthrough(),
 }).passthrough();
 
-function verifySignature(rawBody: Buffer, timestamp: string | undefined, signature: string | undefined) {
-  const secret = process.env.SPECTRUM_SIGNING_SECRET;
-  if (!secret || !timestamp || !signature || !/^\d+$/.test(timestamp)) return false;
+type VerifyResult =
+  | { ok: true; scheme: 'standard' | 'legacy' }
+  | { ok: false; reason: string };
 
+// Log only the last two digits of a phone handle.
+function maskHandle(value: string) {
+  return value.length > 4 ? `${value.slice(0, 3)}…${value.slice(-2)}` : '…';
+}
+
+function safeEqual(a: Buffer, b: Buffer) {
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function timestampFresh(timestamp: string) {
+  if (!/^\d+$/.test(timestamp)) return false;
   const age = Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp));
-  if (!Number.isFinite(age) || age > MAX_TIMESTAMP_AGE_SECONDS) return false;
+  return Number.isFinite(age) && age <= MAX_TIMESTAMP_AGE_SECONDS;
+}
+
+// Photon registers webhooks with two secrets: a Standard Webhooks `whsec_` secret
+// (headers webhook-id / webhook-timestamp / webhook-signature) and a legacy hex
+// secret (X-Spectrum-Timestamp / X-Spectrum-Signature). Only the Standard secret
+// can be rotated without re-registering, so accept whichever one is configured.
+function verifySignature(rawBody: Buffer, header: (name: string) => string | undefined): VerifyResult {
+  const secret = process.env.SPECTRUM_SIGNING_SECRET?.trim();
+  if (!secret) return { ok: false, reason: 'signing-secret-not-configured' };
+
+  if (secret.startsWith('whsec_')) {
+    const id = header('webhook-id');
+    const timestamp = header('webhook-timestamp');
+    const signatures = header('webhook-signature');
+    if (!id || !timestamp || !signatures) return { ok: false, reason: 'standard-headers-missing' };
+    if (!timestampFresh(timestamp)) return { ok: false, reason: 'timestamp-expired' };
+
+    const key = Buffer.from(secret.slice('whsec_'.length), 'base64');
+    const expected = Buffer.from(
+      createHmac('sha256', key).update(`${id}.${timestamp}.`).update(rawBody).digest('base64'),
+    );
+    const matched = signatures
+      .split(' ')
+      .map((entry) => entry.split(','))
+      .some(([version, value]) => version === 'v1' && !!value && safeEqual(expected, Buffer.from(value)));
+    return matched ? { ok: true, scheme: 'standard' } : { ok: false, reason: 'signature-mismatch' };
+  }
+
+  if (/^https?:\/\//i.test(secret)) return { ok: false, reason: 'signing-secret-is-a-url' };
+
+  const timestamp = header('X-Spectrum-Timestamp');
+  const signature = header('X-Spectrum-Signature');
+  if (!timestamp || !signature) return { ok: false, reason: 'legacy-headers-missing' };
+  if (!timestampFresh(timestamp)) return { ok: false, reason: 'timestamp-expired' };
 
   const expected = Buffer.from(
     `v0=${createHmac('sha256', secret).update(`v0:${timestamp}:`).update(rawBody).digest('hex')}`,
   );
-  const received = Buffer.from(signature);
-  return expected.length === received.length && timingSafeEqual(expected, received);
+  return safeEqual(expected, Buffer.from(signature))
+    ? { ok: true, scheme: 'legacy' }
+    : { ok: false, reason: 'signature-mismatch' };
 }
 
 export const healthRoute = registerApiRoute('/healthz', {
@@ -59,11 +106,13 @@ export const photonWebhookRoute = registerApiRoute('/photon/webhook', {
     const rawBody = Buffer.from(await c.req.arrayBuffer());
     if (rawBody.byteLength > MAX_BODY_BYTES) return c.text('payload too large', 413);
 
-    if (!verifySignature(
-      rawBody,
-      c.req.header('X-Spectrum-Timestamp'),
-      c.req.header('X-Spectrum-Signature'),
-    )) {
+    const verification = verifySignature(rawBody, (name) => c.req.header(name));
+    if (!verification.ok) {
+      console.warn('Photon webhook rejected', {
+        reason: verification.reason,
+        hasStandardHeaders: !!c.req.header('webhook-signature'),
+        hasLegacyHeaders: !!c.req.header('X-Spectrum-Signature'),
+      });
       return c.text('unauthorized', 401);
     }
 
@@ -75,13 +124,25 @@ export const photonWebhookRoute = registerApiRoute('/photon/webhook', {
     }
 
     const parsed = textMessageEvent.safeParse(parsedJson);
+    // X-Spectrum-Event is optional on current Photon deliveries; only reject a contradiction.
     const eventHeader = c.req.header('X-Spectrum-Event');
-    if (!parsed.success || parsed.data.event !== eventHeader) return c.text('invalid event', 400);
+    if (!parsed.success || (eventHeader && parsed.data.event !== eventHeader)) {
+      console.warn('Photon webhook payload invalid', {
+        scheme: verification.scheme,
+        event: parsed.success ? parsed.data.event : undefined,
+        eventHeader: eventHeader ?? null,
+      });
+      return c.text('invalid event', 400);
+    }
 
     const { event, space, message } = parsed.data;
     const content = message.content;
+    const ignored = (reason: string, details: Record<string, unknown> = {}) => {
+      console.info('Photon webhook ignored', { reason, messageId: message.id, ...details });
+      return c.body(null, 204);
+    };
     if (
-      event !== 'messages' ||
+      !INBOUND_MESSAGE_EVENTS.has(event) ||
       message.direction !== 'inbound' ||
       message.platform.toLowerCase() !== 'imessage' ||
       space.platform.toLowerCase() !== 'imessage' ||
@@ -90,23 +151,25 @@ export const photonWebhookRoute = registerApiRoute('/photon/webhook', {
       typeof content.text !== 'string' ||
       !space.phone
     ) {
-      return c.body(null, 204);
+      return ignored('unsupported-message', { event, spaceType: space.type ?? null, contentType: content.type });
     }
 
     const senderAllowlist = new Set(
       (process.env.TEST_SENDERS ?? '').split(',').map((value) => value.trim()).filter(Boolean),
     );
-    if (!senderAllowlist.has(message.sender.id)) return c.body(null, 204);
-    if (content.text.length > 8_000) return c.body(null, 204);
+    if (!senderAllowlist.has(message.sender.id)) {
+      return ignored('sender-not-allowlisted', { sender: maskHandle(message.sender.id) });
+    }
+    if (content.text.length > 8_000) return ignored('message-too-long');
 
     // Photon labels shared-pool iMessage conversations with the literal "shared".
     // Only map that label in the explicitly enabled, single-tenant demo mode.
     const sharedLine = space.phone === 'shared';
     if (sharedLine && process.env.PHOTON_SHARED_LINE_TEST_MODE !== 'true') {
-      return c.body(null, 204);
+      return ignored('shared-line-test-mode-disabled');
     }
     const routingLine = sharedLine ? process.env.PHOTON_LINE?.trim() : space.phone;
-    if (!routingLine) return c.body(null, 204);
+    if (!routingLine) return ignored('routing-line-missing');
 
     await ensureDatabaseSchema();
     const pool = await requirePostgres();
@@ -123,7 +186,10 @@ export const photonWebhookRoute = registerApiRoute('/photon/webhook', {
       [routingLine, sharedLine],
     );
     const tenant = tenantResult.rows[0];
-    if (!tenant || !tenant.allowed_senders.includes(message.sender.id)) return c.body(null, 204);
+    if (!tenant) return ignored('tenant-not-found', { line: maskHandle(routingLine), sharedLine });
+    if (!tenant.allowed_senders.includes(message.sender.id)) {
+      return ignored('sender-not-allowed-for-tenant', { sender: maskHandle(message.sender.id) });
+    }
 
     await pool.query(
       `INSERT INTO careops_inbox
