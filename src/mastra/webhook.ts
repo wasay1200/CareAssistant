@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { registerApiRoute } from '@mastra/core/server';
 import { z } from 'zod';
-import { ensureDatabaseSchema } from './database.js';
+import { configuredPhotonLines, ensureDatabaseSchema } from './database.js';
 import { requirePostgres } from './storage.js';
 
 const MAX_BODY_BYTES = 64 * 1024;
@@ -205,7 +205,10 @@ export const photonWebhookRoute = registerApiRoute('/photon/webhook', {
     if (sharedLine && process.env.PHOTON_SHARED_LINE_TEST_MODE !== 'true') {
       return ignored('shared-line-test-mode-disabled');
     }
-    const routingLine = sharedLine ? process.env.PHOTON_LINE?.trim() : space.phone;
+    // Every line listed in PHOTON_LINE belongs to this agency, so map any of them
+    // (and the shared-pool label) to the agency's primary line.
+    const agencyLines = configuredPhotonLines();
+    const routingLine = sharedLine || agencyLines.includes(space.phone) ? agencyLines[0] : space.phone;
     if (!routingLine) return ignored('routing-line-missing');
 
     await ensureDatabaseSchema();

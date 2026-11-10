@@ -1,5 +1,9 @@
 import { requirePostgres } from './storage.js';
 
+export function configuredPhotonLines() {
+  return (process.env.PHOTON_LINE ?? '').split(',').map((value) => value.trim()).filter(Boolean);
+}
+
 let schemaPromise: Promise<void> | undefined;
 
 export async function ensureDatabaseSchema() {
@@ -60,7 +64,8 @@ async function initializeSchema() {
 
   const tenantId = process.env.CAREGIVER_AGENCY_ID?.trim();
   const agencyName = process.env.CAREGIVER_AGENCY_NAME?.trim();
-  const photonLine = process.env.PHOTON_LINE?.trim();
+  // PHOTON_LINE may list several lines for this agency; the first one is the tenant's routing key.
+  const [photonLine] = configuredPhotonLines();
   if (!tenantId || !agencyName || !photonLine) {
     throw new Error('Set CAREGIVER_AGENCY_ID, CAREGIVER_AGENCY_NAME, and PHOTON_LINE.');
   }

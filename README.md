@@ -24,7 +24,7 @@ Connect this GitHub repository to the existing Mastra project `starter-agent-6d5
 | `SPECTRUM_STANDARD_SIGNING_SECRET` | The `standardSigningSecret` (`whsec_...`) from the same registration, used once the webhook moves to `raw-inbound.v1`. |
 | `CAREGIVER_AGENCY_ID` | `careops-demo` |
 | `CAREGIVER_AGENCY_NAME` | `Caregiver Agency Demo` |
-| `PHOTON_LINE` | The configured Photon iMessage line used for tenant routing |
+| `PHOTON_LINE` | Comma-separated Photon iMessage lines for this agency, such as each tester's assigned shared number. The first is the tenant's routing key; messages on any listed line reach the same agent. |
 | `PHOTON_SHARED_LINE_TEST_MODE` | Set to `true` only for this single-tenant demo while the Photon project is on a shared-pool line. Shared-line events are rejected if more than one tenant is enabled. Keep `false` for dedicated-line deployments. |
 | `TEST_SENDERS` | Comma separated E.164 allowlist for the demo testers |
 | `MASTRA_MODEL` | `mastra/anthropic/claude-sonnet-5-5` |
