@@ -20,7 +20,8 @@ Connect this GitHub repository to the existing Mastra project `starter-agent-6d5
 |---|---|
 | `PHOTON_PROJECT_ID` | The Photon Spectrum project ID |
 | `PHOTON_PROJECT_SECRET` | The matching Photon project secret |
-| `SPECTRUM_SIGNING_SECRET` | The webhook's Standard Webhooks secret (`whsec_...`). The legacy hex `signingSecret` also works. Never a URL. |
+| `SPECTRUM_SIGNING_SECRET` | The legacy hex `signingSecret` returned when the Photon webhook is registered. `normalized-events.v1` webhooks sign every delivery with it. Never a URL. |
+| `SPECTRUM_STANDARD_SIGNING_SECRET` | The `standardSigningSecret` (`whsec_...`) from the same registration, used once the webhook moves to `raw-inbound.v1`. |
 | `CAREGIVER_AGENCY_ID` | `careops-demo` |
 | `CAREGIVER_AGENCY_NAME` | `Caregiver Agency Demo` |
 | `PHOTON_LINE` | The configured Photon iMessage line used for tenant routing |
@@ -39,17 +40,9 @@ After the first successful deployment, copy the public server URL from the Mastr
 https://<mastra-server-host>/photon/webhook
 ```
 
-Select the `messages` event. Save the `standardSigningSecret` (`whsec_...`) immediately in the Production environment as `SPECTRUM_SIGNING_SECRET`; Photon only returns it once. The route is unauthenticated at the Mastra layer and relies on Photon HMAC verification.
+Select the `messages` event. Photon returns two secrets only once, at registration. Save `signingSecret` as `SPECTRUM_SIGNING_SECRET` and `standardSigningSecret` as `SPECTRUM_STANDARD_SIGNING_SECRET` in Production. The route is unauthenticated at the Mastra layer and relies on Photon HMAC verification.
 
-If the secret is lost or was saved incorrectly, issue a new Standard secret without re-registering the webhook. Photon keeps the webhook ID and URL:
-
-```sh
-curl -X POST -u "$PHOTON_PROJECT_ID:$PHOTON_PROJECT_SECRET" -H 'Content-Type: application/json' \
-  -d '{"overlapSeconds":0}' \
-  "https://spectrum.photon.codes/projects/$PHOTON_PROJECT_ID/webhooks/<webhook-id>/secret/rotate"
-```
-
-Then set the returned `standardSigningSecret` with `npx mastra server env set SPECTRUM_SIGNING_SECRET <value>` and run `npx mastra env restart production`. Rejected and ignored webhook calls log a `reason` code (for example `signature-mismatch` or `sender-not-allowlisted`) in the Mastra server logs.
+If a secret is lost, delete the webhook and register the same URL again (`DELETE` then `POST` on `https://spectrum.photon.codes/projects/$PHOTON_PROJECT_ID/webhooks/`, Basic auth with the project ID and secret). Store both new secrets with `npx mastra server env set`, then run `npx mastra env restart production`. In-place rotation only works for `raw-inbound.v1` webhooks. Rejected and ignored webhook calls log a `reason` code (for example `signature-mismatch` or `sender-not-allowlisted`) in the Mastra server logs.
 
 ## Test
 

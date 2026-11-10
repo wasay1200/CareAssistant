@@ -44,32 +44,69 @@ function timestampFresh(timestamp: string) {
   return Number.isFinite(age) && age <= MAX_TIMESTAMP_AGE_SECONDS;
 }
 
-// Photon registers webhooks with two secrets: a Standard Webhooks `whsec_` secret
-// (headers webhook-id / webhook-timestamp / webhook-signature) and a legacy hex
-// secret (X-Spectrum-Timestamp / X-Spectrum-Signature). Only the Standard secret
-// can be rotated without re-registering, so accept whichever one is configured.
+// Photon returns two secrets when a webhook is registered. `normalized-events.v1`
+// webhooks sign with the legacy hex `signingSecret` (X-Spectrum-Timestamp /
+// X-Spectrum-Signature). `raw-inbound.v1` webhooks sign with the Standard Webhooks
+// `whsec_` secret (webhook-id / webhook-timestamp / webhook-signature).
+// Configure both and verify against whichever headers the delivery carries.
+function configuredSecrets() {
+  const values = [process.env.SPECTRUM_SIGNING_SECRET, process.env.SPECTRUM_STANDARD_SIGNING_SECRET]
+    .map((value) => value?.trim())
+    .filter((value): value is string => !!value);
+  return {
+    standard: values.find((value) => value.startsWith('whsec_')),
+    legacy: values.find((value) => !value.startsWith('whsec_')),
+  };
+}
+
 function verifySignature(rawBody: Buffer, header: (name: string) => string | undefined): VerifyResult {
-  const secret = process.env.SPECTRUM_SIGNING_SECRET?.trim();
-  if (!secret) return { ok: false, reason: 'signing-secret-not-configured' };
+  const { standard, legacy } = configuredSecrets();
+  if (!standard && !legacy) return { ok: false, reason: 'signing-secret-not-configured' };
 
-  if (secret.startsWith('whsec_')) {
-    const id = header('webhook-id');
-    const timestamp = header('webhook-timestamp');
-    const signatures = header('webhook-signature');
-    if (!id || !timestamp || !signatures) return { ok: false, reason: 'standard-headers-missing' };
-    if (!timestampFresh(timestamp)) return { ok: false, reason: 'timestamp-expired' };
-
-    const key = Buffer.from(secret.slice('whsec_'.length), 'base64');
-    const expected = Buffer.from(
-      createHmac('sha256', key).update(`${id}.${timestamp}.`).update(rawBody).digest('base64'),
-    );
-    const matched = signatures
-      .split(' ')
-      .map((entry) => entry.split(','))
-      .some(([version, value]) => version === 'v1' && !!value && safeEqual(expected, Buffer.from(value)));
-    return matched ? { ok: true, scheme: 'standard' } : { ok: false, reason: 'signature-mismatch' };
+  let failure: VerifyResult | undefined;
+  if (standard && header('webhook-signature')) {
+    const result = verifyStandard(rawBody, header, standard);
+    if (result.ok) return result;
+    failure = result;
   }
+  if (legacy && header('X-Spectrum-Signature')) {
+    const result = verifyLegacy(rawBody, header, legacy);
+    if (result.ok) return result;
+    failure = result;
+  }
+  if (failure) return failure;
+  if (header('X-Spectrum-Signature')) return { ok: false, reason: 'legacy-secret-not-configured' };
+  if (header('webhook-signature')) return { ok: false, reason: 'standard-secret-not-configured' };
+  return { ok: false, reason: 'signature-headers-missing' };
+}
 
+function verifyStandard(
+  rawBody: Buffer,
+  header: (name: string) => string | undefined,
+  secret: string,
+): VerifyResult {
+  const id = header('webhook-id');
+  const timestamp = header('webhook-timestamp');
+  const signatures = header('webhook-signature');
+  if (!id || !timestamp || !signatures) return { ok: false, reason: 'standard-headers-missing' };
+  if (!timestampFresh(timestamp)) return { ok: false, reason: 'timestamp-expired' };
+
+  const key = Buffer.from(secret.slice('whsec_'.length), 'base64');
+  const expected = Buffer.from(
+    createHmac('sha256', key).update(`${id}.${timestamp}.`).update(rawBody).digest('base64'),
+  );
+  const matched = signatures
+    .split(' ')
+    .map((entry) => entry.split(','))
+    .some(([version, value]) => version === 'v1' && !!value && safeEqual(expected, Buffer.from(value)));
+  return matched ? { ok: true, scheme: 'standard' } : { ok: false, reason: 'standard-signature-mismatch' };
+}
+
+function verifyLegacy(
+  rawBody: Buffer,
+  header: (name: string) => string | undefined,
+  secret: string,
+): VerifyResult {
   if (/^https?:\/\//i.test(secret)) return { ok: false, reason: 'signing-secret-is-a-url' };
 
   const timestamp = header('X-Spectrum-Timestamp');
@@ -82,7 +119,7 @@ function verifySignature(rawBody: Buffer, header: (name: string) => string | und
   );
   return safeEqual(expected, Buffer.from(signature))
     ? { ok: true, scheme: 'legacy' }
-    : { ok: false, reason: 'signature-mismatch' };
+    : { ok: false, reason: 'legacy-signature-mismatch' };
 }
 
 export const healthRoute = registerApiRoute('/healthz', {
